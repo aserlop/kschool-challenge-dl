@@ -145,12 +145,13 @@ def train_and_evaluate(
 
     # gs://bucket_name/prefix1/prefix2/....
     dest_bucket_name = job_dir.split('/')[2]
-    path_in_bucket = 'saved_models' + trainer.__version__
+    path_in_bucket = 'saved_models/' + trainer.__version__ + '/'
 
     # Upload to GCS
     client = storage.Client()
     bucket = client.bucket(dest_bucket_name)
-    LOGGER.info("Uploading model to gs://%s/%s" % (bucket_name, path_in_bucket))
+    LOGGER.info("Uploading model to gs://%s/%s" % (dest_bucket_name,
+                                                   path_in_bucket))
     upload_local_directory_to_gcs(localdir, bucket, path_in_bucket)
 
 
@@ -161,23 +162,28 @@ if __name__ == '__main__':
     parser.add_argument("--epochs",      required=True,      type=int)
     parser.add_argument("--download",    action='store_true')
     parser.add_argument("--job-dir",     required=False)
+    parser.add_argument("--img-size", default=128, type=int)
     parser.add_argument("--trainsplit",  default=0.9,        type=float)
 
     args = parser.parse_args()
 
+    # Tuneable hyperparameters
+    epochs = args.epochs
+    img_size = args.img_size
+
     bucket_name = args.bucket_name
     prefix = args.prefix
     download = args.download
-    epochs = args.epochs
+
     job_dir = args.job_dir
     trainsplit = args.trainsplit
 
     train_and_evaluate(bucket_name,
                        prefix,
                        download,
-                       128,
-                       1,
-                       5,
+                       img_size,
+                       100,
+                       4000,
                        epochs,
                        job_dir,
                        trainsplit)
