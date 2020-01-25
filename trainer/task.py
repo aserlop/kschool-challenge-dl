@@ -4,9 +4,11 @@ import argparse
 import logging.config
 import os
 import tensorflow as tf
+import random
 
 from .model import build_model
 from google.cloud import storage
+from tensorflow.core.framework.summary_pb2 import Summary
 from tensorflow.keras import optimizers
 from tensorflow.keras import losses
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
@@ -47,7 +49,7 @@ def _download_file(bucket_name, remote_name, dest_name):
     )
 
 
-def download_prepare_data(bucket_name, prefix):
+def download_prepare_data(bucket_name, prefix, trainsplit):
     """Download and prepare the data for training.
     Args:
     bucket_name: Name of the bucket where the data is stored
@@ -60,7 +62,14 @@ def download_prepare_data(bucket_name, prefix):
 
         if fn.endswith('jpg'):
             label = fn.split('.')[0]
-            dest_dir = 'data/%s/' % label
+            randnum = random.random()
+
+            if randnum < trainsplit:
+                dest_dir = 'data/%s/%s' % ('train', label)
+
+            else:
+                dest_dir = 'data/%s/%s' % ('test', label)
+
             dest_name = dest_dir + fn
 
             # Check that dest dir exists
@@ -80,40 +89,63 @@ def train_and_evaluate(
     batch_size,
     n_imgs,
     epochs,
-    job_dir):
+    job_dir,
+    trainsplit):
 
     if download:
-        download_prepare_data(bucket_name, prefix)
+        download_prepare_data(bucket_name, prefix, trainsplit)
     else:
         print("Not downloading data")
 
-    # FIXME: train a model
     img_datagen = ImageDataGenerator(rescale=1 / 255.0)
 
     img_generator = img_datagen.flow_from_directory(
-      'data',
-      target_size=(img_size, img_size),
-      batch_size=batch_size,
-      class_mode='binary')
+        'data/train',
+        target_size=(img_size, img_size),
+        batch_size=batch_size,
+        class_mode='binary')
+
+    test_generator = img_datagen.flow_from_directory(
+        'data/test',
+        target_size=(img_size, img_size),
+        batch_size=batch_size,
+        class_mode='binary')
 
     steps = int(n_imgs / batch_size)
 
     model = build_model(img_size)
     model.compile(
-      optimizer=optimizers.Adam(),
-      loss=losses.binary_crossentropy,
-      metrics=['accuracy']
+        optimizer=optimizers.Adam(),
+        loss=losses.binary_crossentropy,
+        metrics=['accuracy']
     )
     model.fit_generator(img_generator, epochs=epochs, steps_per_epoch=steps)
+
+    model_loss, model_acc = model.evaluate_generator(test_generator)
+
+    print('MODEL LOSS: %.4f' % model_loss)
+    print('MODEL ACC: %.4f' % model_acc)
+
+    # Report metrics to Cloud ML Engine for hypertuning
+    metric_tag = 'accuracy_dogs_cats'
+    summary = Summary(value=[Summary.Value(tag=metric_tag,
+                                           simple_value=model_acc)])
+    eval_path = os.path.join(job_dir, metric_tag)
+    LOGGER.info("Writing metrics to %s" % eval_path)
+    summary_writer = tf.summary.FileWriter(eval_path)
+
+    summary_writer.add_summary(summary)
+    summary_writer.flush()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--bucket-name", required=True)
-    parser.add_argument("--prefix", required=True)
-    parser.add_argument("--epochs", required=True, type=int)
-    parser.add_argument("--download", action='store_true')
-    parser.add_argument("--job-dir", required=False)
+    parser.add_argument("--prefix",      required=True)
+    parser.add_argument("--epochs",      required=True,      type=int)
+    parser.add_argument("--download",    action='store_true')
+    parser.add_argument("--job-dir",     required=False)
+    parser.add_argument("--trainsplit",  default=0.9,        type=float)
 
     args = parser.parse_args()
 
@@ -122,6 +154,7 @@ if __name__ == '__main__':
     download = args.download
     epochs = args.epochs
     job_dir = args.job_dir
+    trainsplit = args.trainsplit
 
     train_and_evaluate(bucket_name,
                        prefix,
@@ -130,4 +163,5 @@ if __name__ == '__main__':
                        1,
                        5,
                        epochs,
-                       job_dir)
+                       job_dir,
+                       trainsplit)
